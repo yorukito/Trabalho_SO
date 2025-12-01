@@ -88,7 +88,7 @@ class TaskManager(threading.Thread):
             self.run_sjf_scheduler()
         
         elif self.arquiteture == 'priority':
-            pass
+            self.run_priority_scheduler()
     
     def run_rr_scheduler(self):
         """Implementa Round-Robin com preempção baseada em quantum"""
@@ -268,10 +268,10 @@ class TaskManager(threading.Thread):
                 
                 server.assign_task(task=task)
                 
-                status_pos_dispatch = server.get_server_status()
+                status = server.get_server_status()
                 print(
                         f"\n{cyan('[DISPATCH]')} "
-                        f"Tarefa {task['id']} -> Servidor {server.id} (Cap: {status_pos_dispatch['current_capacity']}/{status_pos_dispatch['max_capacity']})\n"
+                        f"Tarefa {task['id']} -> Servidor {server.id} (Cap: {status['current_capacity']}/{status['max_capacity']})\n"
                         f" - Tempo Execução Total: {task['tempo_exec']:.2f}s\n"
                         f" - Chegada: {task['temp_chegada']:.2f}s\n"
                     )
@@ -299,3 +299,108 @@ class TaskManager(threading.Thread):
             server.stop()
         for server in active_servers:
             server.join()
+
+         #Implementa o escalonamento de Prioridade
+    def run_priority_scheduler(self):
+        print("Running Priority Scheduler")
+
+        sorted_requisicoes = sorted(self.requisicoes, key=lambda x: (x['prioridade'], x['temp_chegada']))
+
+        self.fila_global_pendente = sorted_requisicoes[:]
+        
+        
+        num_servidores = len(self.servidores)
+        
+        if num_servidores == 0:
+            print("Erro: Nenhum servidor disponível para atribuição.")
+            return
+        
+        active_servers = []
+        for server in self.servidores:
+            server.start()
+            active_servers.append(server)
+
+        while self.fila_global_pendente or self.fila_de_prontos_priority or any(s.get_server_status()['current_capacity'] > 0 for s in self.servidores):
+                
+                tempo_atual = time.time() - self.start_time
+                
+                # Move tarefas que chegaram para fila de prontos
+                tasks_ready_to_move = []
+                for task in self.fila_global_pendente:
+                    if task['temp_chegada'] <= tempo_atual:
+                        tasks_ready_to_move.append(task)
+                
+                for task_to_remove in tasks_ready_to_move:
+                    self.fila_global_pendente.remove(task_to_remove)
+                    self.fila_de_prontos_priority.append(task_to_remove)
+        
+        print(f"\n--- {num_servidores} Servidores INICIADOS ---")
+
+        while self.fila_global_pendente or any(s.get_server_status()['current_capacity'] > 0 for s in self.servidores):
+            
+            # Se a fila de espera acabou, mas servidores ainda trabalham, espera eles terminarem
+            if not self.fila_global_pendente:
+                if all(s.get_server_status()['current_capacity'] == 0 for s in self.servidores):
+                    break
+                time.sleep(0.5)
+                continue
+            
+            # Pega a próxima tarefa prioritária (Topo da lista)
+            # NÃO removemos ainda (.pop), apenas olhamos a tarefa.
+            task = self.fila_global_pendente[0]
+           
+
+            # Tenta encontrar UMA vaga em QUALQUER servidor
+            for server in self.servidores:
+                status = server.get_server_status()
+                tasks_atribuidas = []
+                # Se achou vaga
+                if status['current_capacity'] < status['max_capacity']:
+                    # Remove da fila efetivamente
+                    self.fila_global_pendente.pop(0)
+                    
+                    # Atribui ao servidor
+                    server.assign_task(task=task)
+
+                    status = server.get_server_status()
+                    
+                    print(f"  [PRIO {task['prioridade']}] Tarefa {task['id']} -> Servidor {server.id} (Ocupação: {status['current_capacity']}/{status['max_capacity']})")
+                    tasks_atribuidas.append(task)
+
+                
+
+                 # Aguarda se há tarefas mas nenhum servidor livre
+            if (self.fila_global_pendente or self.fila_de_prontos_sjf) and not self.servidores :
+                time.sleep(0.5) 
+                continue
+                        # Pequena pausa para sincronização
+            if self.fila_global_pendente:
+                time.sleep(0.1) 
+            
+            # Encerra quando tudo foi processado
+            if not self.fila_global_pendente and not self.fila_de_prontos_sjf and all(s.get_server_status()['current_capacity'] == 0 for s in self.servidores):
+                break
+                   
+                    # Sai do loop de servidores e volta para pegar a próxima taref
+            # LÓGICA DE BLOQUEIO (Strict Priority):
+            # Se a tarefa mais importante (5) não conseguiu vaga, ninguém mais pode passar na frente.
+            # O sistema espera (sleep) até liberar uma vaga para ELA.
+            
+
+        # Atualiza tempo final caso a lógica de callback falhe ou atrase
+        self.end_time = time.time()
+        
+        print("\n--- FIM DA ATRIBUIÇÃO E PROCESSAMENTO ---")
+        
+        # Finaliza e junta as threads dos servidores
+        for server in active_servers:
+            server.stop()
+        
+        for server in active_servers:
+            server.join()
+
+
+### Explicação da alteração chave:
+
+
+key=lambda x: (-x['prioridade'], x['temp_chegada'])
