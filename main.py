@@ -37,8 +37,3 @@ if __name__ == '__main__':
         # Coleta métricas de CPU e calcula estatísticas finais
         cpu_util = capture_utilization()
         t1.calculate_metrics(cpu_util)
-    
-    else:
-        print("rode como python3 main.py rr")
-        print("rode como python3 main.py sjf")
-        print("rode como python3 main.py prioridade")

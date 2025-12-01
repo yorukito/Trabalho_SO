@@ -1,9 +1,6 @@
 import threading
-import sys
 import time
 from colors import cyan
-
-arquiteture = sys.argv[1]
 
 class TaskManager(threading.Thread):
     def __init__(self, arquiteture, servidores, requisicoes):
@@ -11,22 +8,50 @@ class TaskManager(threading.Thread):
         self.arquiteture = arquiteture
         self.servidores = servidores
         self.requisicoes = requisicoes
-        self.completion_times = {}
-        self.completion_lock = threading.Lock()
+        self.completion_times = {}  # Armazena tempos de conclusão {task_id: tempo_resposta}
+        self.completion_lock = threading.Lock()  # Sincronização para completion_times
         self.start_time = time.time()
         self.end_time = 0
+        
+        # Atributos específicos para Round-Robin
+        self.quantum = 1.0  # Fatia de tempo para preempção
+        self.tasks_in_progress = {}  # Rastreia tarefas em execução {task_id: server_id}
+        self.fila_de_prontos_rr = []  # Fila de prontos para RR
+        
+        # Inicializa campos nas requisições
+        for req in self.requisicoes:
+            req['tempo_restante'] = req['tempo_exec']  # Tempo que falta executar
+            req['primeira_atribuicao'] = -1  # Momento da primeira atribuição
         
         # Vincula este gerenciador a cada servidor
         for server in self.servidores:
             server.task_manager = self
     
-    # Registra o tempo de conclusão de uma tarefa (thread-safe)
     def register_completion(self, task_id, response_time):
+        """Registra conclusão de tarefas com tratamento específico por algoritmo"""
         with self.completion_lock:
-            self.completion_times[task_id] = response_time
+            original_task = next((t for t in self.requisicoes if t['id'] == task_id), None)
+
+            if self.arquiteture == 'rr':
+                # Round-Robin: tarefa pode retornar à fila se não terminou
+                if task_id in self.tasks_in_progress:
+                    del self.tasks_in_progress[task_id]
+                
+                if original_task:
+                    if original_task['tempo_restante'] > 0:
+                        # Ainda tem tempo restante, re-enfileira
+                        if original_task not in self.fila_de_prontos_rr:
+                            self.fila_de_prontos_rr.append(original_task)
+                    else:
+                        # Tarefa completa, registra tempo de resposta
+                        self.completion_times[task_id] = response_time
+                        
+            else:
+                # SJF/Priority: tarefas executam até o fim (não-preemptivo)
+                self.completion_times[task_id] = response_time
     
-    # Calcula e exibe métricas finais do sistema
     def calculate_metrics(self, cpu_utilization):
+        """Calcula métricas de desempenho do sistema"""
         total_tasks = len(self.requisicoes)
         if not self.completion_times or total_tasks == 0:
             avg_response_time = 0.0
@@ -54,26 +79,25 @@ class TaskManager(threading.Thread):
         print(f"Throughput: {throughput:.2f} tarefas/segundo")
         print("="*50)
     
-    # Executa o algoritmo de escalonamento escolhido
     def run(self):
+        """Seleciona e executa o algoritmo de escalonamento"""
         if self.arquiteture == 'rr':
             self.run_rr_scheduler()
             
         elif self.arquiteture == 'sjf':
-            print('sjf')
-            # Implementar o SJF aqui
+            self.run_sjf_scheduler()
         
         elif self.arquiteture == 'priority':
-            print('priority')
-            # Implementar o por Prioridade aqui
+            pass
     
-    # Implementa o escalonamento Round-Robin
     def run_rr_scheduler(self):
-        print('Running Rounding Robing Scheduler')
+        """Implementa Round-Robin com preempção baseada em quantum"""
+        print('Running Rounding Robing Scheduler (Quantum: {:.2f}s)'.format(self.quantum))
         
-        # Ordena requisições por tempo de chegada
+        # Ordena tarefas por tempo de chegada
         sorted_requisicoes = sorted(self.requisicoes, key=lambda x: x['temp_chegada'])
-        self.fila_global_pendente = sorted_requisicoes[:]
+        self.fila_global_pendente = sorted_requisicoes[:]  # Tarefas que ainda não chegaram
+        self.fila_de_prontos_rr = []  # Tarefas prontas para executar
         
         num_servidores = len(self.servidores)
         
@@ -89,44 +113,189 @@ class TaskManager(threading.Thread):
         
         print(f"\n--- {num_servidores} Servidores INICIADOS ---")
         
-        server_index_rr = 0  # Índice para distribuição circular
+        server_index_rr = 0  # Índice para distribuição circular entre servidores
         
-        # Loop principal: distribui tarefas enquanto houver pendências ou tarefas em execução
-        while self.fila_global_pendente or any(s.get_server_status()['current_capacity'] > 0 for s in self.servidores):
+        # Loop principal: continua enquanto houver trabalho
+        while self.fila_global_pendente or self.fila_de_prontos_rr or any(s.get_server_status()['current_capacity'] > 0 for s in self.servidores):
             
-            # Tenta distribuir tarefas para todos os servidores em uma rodada
+            tempo_atual = time.time() - self.start_time
+            
+            # Move tarefas que chegaram para a fila de prontos
+            tasks_ready_to_move = []
+            for task in self.fila_global_pendente:
+                if task['temp_chegada'] <= tempo_atual:
+                    tasks_ready_to_move.append(task)
+            
+            for task_to_move in tasks_ready_to_move:
+                self.fila_global_pendente.remove(task_to_move)
+                self.fila_de_prontos_rr.append(task_to_move)
+            
+            # Despacha tarefas da fila de prontos em round-robin
             for _ in range(num_servidores):
-                if not self.fila_global_pendente:
+                
+                if not self.fila_de_prontos_rr:
                     break
                     
-                server = self.servidores[server_index_rr % num_servidores]
+                server_index_to_check = server_index_rr % num_servidores
+                server = self.servidores[server_index_to_check]
                 
                 status = server.get_server_status()
                 
-                # Atribui tarefa se o servidor tiver capacidade disponível
                 if status['current_capacity'] < status['max_capacity']:
-                    task = self.fila_global_pendente.pop(0)
-                    server.assign_task(task=task)
                     
-                    print(f"  {cyan("[DISPATCH]")} Tarefa {task['id']} despachada para Servidor {server.id} (Cap. {status['current_capacity']+1}/{status['max_capacity']}).")
+                    # Busca primeira tarefa que não está sendo processada
+                    task_to_dispatch = None
+                    for i, task in enumerate(self.fila_de_prontos_rr):
+                        if task['id'] not in self.tasks_in_progress:
+                            task_to_dispatch = self.fila_de_prontos_rr.pop(i)
+                            break
+                    
+                    if task_to_dispatch is None:
+                        # Todas as tarefas prontas já estão em execução
+                        server_index_rr += 1 
+                        continue
+                        
+                    task = task_to_dispatch
+                    
+                    # Calcula fatia de tempo: quantum ou tempo restante (o menor)
+                    time_slice = min(self.quantum, task['tempo_restante'])
+                    
+                    # Cria cópia da tarefa com tempo do slice atual
+                    dispatch_task = task.copy()
+                    dispatch_task['tempo_restante'] = time_slice 
+                    
+                    # Atualiza tempo restante da tarefa original
+                    task['tempo_restante'] -= time_slice
+                    
+                    # Marca tarefa como em processamento (evita duplicação)
+                    self.tasks_in_progress[task['id']] = server.id
+                    
+                    server.assign_task(task=dispatch_task)
+                    
+                    # Registra primeira atribuição se for a primeira vez
+                    if task['primeira_atribuicao'] == -1:
+                         task['primeira_atribuicao'] = tempo_atual
+                    
+                    print(
+                        f"\n{cyan('[DISPATCH]')} "
+                        f"Tarefa {task['id']} -> Servidor {server.id} (Cap: {status['current_capacity']+1}/{status['max_capacity']})\n"
+                        f" - Quantum (Slice): {time_slice:.2f}s (Rest: {task['tempo_restante']:.2f}s)\n"
+                        f" - Chegada: {task['temp_chegada']:.2f}s"
+                    )
+                    
+                    server_index_rr += 1
                 
-                server_index_rr += 1
+                else:
+                    # Servidor cheio, tenta o próximo
+                    server_index_rr += 1
             
-            # Aguarda se todos os servidores estiverem cheios
-            if self.fila_global_pendente and all(s.get_server_status()['is_full'] for s in self.servidores):
-                time.sleep(0.5) 
+            # Aguarda se há tarefas mas nenhum servidor livre
+            if self.fila_global_pendente or self.fila_de_prontos_rr:
+                time.sleep(0.1)
 
-            # Encerra se não há mais tarefas pendentes nem em execução
-            if not self.fila_global_pendente and all(s.get_server_status()['current_capacity'] == 0 for s in self.servidores):
+            # Encerra quando tudo foi processado
+            if not self.fila_global_pendente and not self.fila_de_prontos_rr and all(s.get_server_status()['current_capacity'] == 0 for s in self.servidores):
                 break
         
         self.end_time = time.time()
         
-        print("\n--- FIM DA ATRIBUIÇÃO E PROCESSAMENTO ---")
+        print("\n--- FIM DO ROUND-ROBIN: ATRIBUIÇÃO E PROCESSAMENTO ---")
         
-        # Finaliza todos os servidores
+        # Finaliza servidores
         for server in active_servers:
             server.stop()
         
+        for server in active_servers:
+            server.join()
+    
+    def run_sjf_scheduler(self):
+        """Implementa Shortest Job First (não-preemptivo)"""
+        print('Running Shortest Job First Scheduler')
+        
+        # Ordena tarefas por tempo de chegada
+        self.fila_global_pendente = sorted(self.requisicoes, key=lambda x: x['temp_chegada'])
+        self.fila_de_prontos_sjf = []  # Fila persistente de tarefas prontas
+    
+        num_servidores = len(self.servidores)
+        if num_servidores == 0:
+            print("Erro: Nenhum servidor para a atribuição")
+            return
+        
+        # Inicia servidores como threads
+        active_servers = []
+        for server in self.servidores:
+            server.start()
+            active_servers.append(server)
+        
+        print(f"\n--- {cyan("Servidores Iniciados")} ---")
+
+        # Loop principal: continua enquanto houver trabalho
+        while self.fila_global_pendente or self.fila_de_prontos_sjf or any(s.get_server_status()['current_capacity'] > 0 for s in self.servidores):
+            
+            tempo_atual = time.time() - self.start_time
+            
+            # Move tarefas que chegaram para fila de prontos
+            tasks_ready_to_move = []
+            for task in self.fila_global_pendente:
+                if task['temp_chegada'] <= tempo_atual:
+                    tasks_ready_to_move.append(task)
+            
+            for task_to_remove in tasks_ready_to_move:
+                self.fila_global_pendente.remove(task_to_remove)
+                self.fila_de_prontos_sjf.append(task_to_remove)
+            
+            # Ordena fila de prontos por tempo de execução (menor primeiro - SJF)
+            self.fila_de_prontos_sjf.sort(key=lambda x: x['tempo_exec'])
+
+            # Identifica servidores com capacidade disponível
+            disponiveis = [s for s in self.servidores if s.get_server_status()['current_capacity'] < s.get_server_status()['max_capacity']]
+
+            tasks_atribuidas = []
+            
+            # Atribui tarefas aos servidores disponíveis
+            for server in disponiveis:
+                
+                # Revalida capacidade (importante para servidores com capacidade > 1)
+                status = server.get_server_status()
+                if status['current_capacity'] >= status['max_capacity']:
+                    continue
+                    
+                if not self.fila_de_prontos_sjf:
+                    break
+                
+                # Pega a tarefa mais curta da fila de prontos
+                task = self.fila_de_prontos_sjf.pop(0) 
+                
+                server.assign_task(task=task)
+                
+                status_pos_dispatch = server.get_server_status()
+                print(
+                        f"\n{cyan('[DISPATCH]')} "
+                        f"Tarefa {task['id']} -> Servidor {server.id} (Cap: {status_pos_dispatch['current_capacity']}/{status_pos_dispatch['max_capacity']})\n"
+                        f" - Tempo Execução Total: {task['tempo_exec']:.2f}s\n"
+                        f" - Chegada: {task['temp_chegada']:.2f}s\n"
+                    )
+                tasks_atribuidas.append(task)
+            
+            # Aguarda se há tarefas mas nenhum servidor livre
+            if (self.fila_global_pendente or self.fila_de_prontos_sjf) and not disponiveis:
+                time.sleep(0.5) 
+                continue
+                
+            # Pequena pausa para sincronização
+            if self.fila_global_pendente:
+                time.sleep(0.1) 
+            
+            # Encerra quando tudo foi processado
+            if not self.fila_global_pendente and not self.fila_de_prontos_sjf and all(s.get_server_status()['current_capacity'] == 0 for s in self.servidores):
+                break
+                        
+        self.end_time = time.time()
+        
+        print("\n--- FIM DO SJF: ATRIBUIÇÃO E PROCESSAMENTO ---\n")
+
+        # Finaliza servidores
+        for server in active_servers:
+            server.stop()
         for server in active_servers:
             server.join()
