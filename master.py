@@ -130,3 +130,68 @@ class TaskManager(threading.Thread):
         
         for server in active_servers:
             server.join()
+
+    #Implementa o escalonamento SJF
+    def run_sjf_scheduler(self):
+        print('Running Shortest Job First Scheduler')
+        
+        #Ordena pelo tempo de chagada inicialmente    
+        self.fila_global_pendente = sorted(self.requisicoes, key=lambda x: x['temp_chegada'])
+     
+        #Erros:
+        num_servidores = len(self.servidores)
+        if num_servidores == 0:
+            print("Erro: Nenhum servidor para a atribuição")
+            return
+        
+        #Iniciar Servidores
+        active_servers = []
+        for servers in self.servidores:
+            servers.start
+            active_servers.append(server)
+        
+        print(f"{cyan("Servidores Iniciados")}")
+
+        #Loop principal
+        while self.fila_global_pendente or any(s.get_server_status()['current_capacity'] > 0 for s in self.servidores):
+            status = server.get_server_status()
+            
+            tempo_atual = time.time() - self.start_time
+
+            #Filtra as tarefas que ja chegaram
+            task_disp = [
+                t for t in self.fila_global_pendente
+                if t['temp_chegada'] <= tempo_atual
+            ]
+
+            #Ordena tarefas disponiveis apenas pelo tempo de execução
+            task_disp.sort(key=lambda x: x['tempo_exec'])
+
+            
+            for server in self.servidores:
+                status = server.get_server_status()
+            
+                #Atribui tarefa se o servidor tiver capacidade disponível
+                if status['current_capacity'] < status['max_capacity']:
+                    if task_disp:
+                        task = task_disp[0]
+                        self.fila_global_pendente.pop(task)
+                        server.assign_task(task=task)
+
+                        print(f"  {cyan("[DISPATCH]")} Tarefa {task['id']} despachada para Servidor {server.id} (Cap. {status['current_capacity']+1}/{status['max_capacity']}).")
+
+            # Aguarda se todos os servidores estiverem cheios
+            if self.fila_global_pendente and all(s.get_server_status()['is_full'] for s in self.servidores):
+                time.sleep(0.5) 
+
+            # Encerra se não há mais tarefas pendentes nem em execução
+            if not self.fila_global_pendente and all(s.get_server_status()['current_capacity'] == 0 for s in self.servidores):
+                break
+                    
+        print("\n--- FIM DO SJF: ATRIBUIÇÃO E PROCESSAMENTO ---\n")
+
+        #Finalizar Servidores
+        for server in active_servers:
+            server.stop()
+        for server in active_servers:
+            server.join()
