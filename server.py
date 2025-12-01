@@ -1,81 +1,146 @@
-from time import sleep         # pegar o tempo de execusao
-from threading import Thread
+from colors import red, green, blue
+from time import time, sleep
+from threading import Thread, Lock, Event
+from multiprocessing import Process, Manager
+import os
+
+def process_task_worker(task, result_queue):
+    """Função executada por cada processo filho para processar uma tarefa"""
+    task_id = task.get('id')
+    tempo_exec = task.get('tempo_restante', 0)
+    tempo_atribuicao = task.get('tempo_atribuicao')
+    pid = os.getpid()
+    
+    print(f"  [PID {pid}] {red('PROCESSANDO')} Tarefa {task_id} por {tempo_exec}s...")
+    
+    # Simula o processamento da tarefa
+    sleep(tempo_exec)
+    
+    tempo_conclusao = time()
+    tempo_resposta = tempo_conclusao - tempo_atribuicao
+    
+    # Envia resultado de volta via queue
+    result_queue.put({
+        'task_id': task_id,
+        'tempo_resposta': tempo_resposta,
+        'pid': pid
+    })
+    
+    print(f"  [PID {pid}] {green('FINALIZADO')} Tarefa {task_id}")
+
 
 class Server(Thread):
-    def __init__(self, id, max_capacity):
+    def __init__(self, id, max_capacity, task_manager=None): 
         super().__init__()
         self.id = id
         self.max_capacity = max_capacity
-        self.capacity = 0
-        self.tasks_to_do = {}
+        self.capacity = 0  # Número de processos ativos
+        self.tasks_to_do = []  # Fila de tarefas aguardando processamento
+        self.active_processes = []  # Lista de processos em execução
+        self.lock = Lock()
+        self.stop_event = Event()
+        self.daemon = True
+        self.task_manager = task_manager
+        
+        # Queue para receber resultados dos processos filhos
+        self.manager = Manager()
+        self.result_queue = self.manager.Queue()
 
     def assign_task(self, task: dict):
-        if self.capacity < self.max_capacity:
-            task_id = task.get('id') 
-            task_exec = task.get('tempo_exec')
-            if task_id is not None:
-                if 'tempo_servico' in task and 'tempo_restante' not in task:
-                    task['tempo_restante'] = task['tempo_servico']
-                    
-                # Armazena o dicionário da tarefa inteira
-                self.tasks_to_do[task_id, task_exec] = task
-                self.capacity += 1
-                print(f"Servidor {self.id}: Tarefa {task_id} atribuída.")
-                print(f"Capacidade atual: {self.capacity}/{self.max_capacity}")
-            else:
-                print("Tarefa não pode ser atribuída: ID da tarefa não encontrado.")
-        else:
-            print(f"Servidor {self.id} (Capacidade Máxima: {self.max_capacity}) está cheio.")
-
-
-    # retorna a task a ser executada
-    def get_task(self):
-        pass
-
-
-    def do_task(self, task_id, tempo_executado=None):
-        if task_id in self.tasks_to_do:
-            task = self.tasks_to_do[task_id]
-            
-            if tempo_executado is not None:
-                tempo_gasto = min(tempo_executado, task.get('tempo_restante', 0))
-            else:
-                tempo_gasto = task.get('tempo_restante', 0)
+        """Adiciona tarefa à fila do servidor e inicia processo imediatamente se possível"""
+        with self.lock:
+            task_id = task.get('id')
+            if 'tempo_restante' not in task:
+                task['tempo_restante'] = task.get('tempo_exec', 0)
                 
-            if tempo_gasto > 0:
-                print(f"Servidor {self.id}: Executando Tarefa {task_id} por {tempo_gasto} segundo(s)...")
-                sleep(tempo_gasto) 
-                task['tempo_restante'] -= tempo_gasto
-                print(f"Servidor {self.id}: Tempo restante para Tarefa {task_id}: {task['tempo_restante']}s.")
-            
-            if task.get('tempo_restante', 0) <= 0:
-                task_concluida = self.tasks_to_do.pop(task_id)
-                self.capacity -= 1
-                print(f"Servidor {self.id}: Tarefa {task_id} **CONCLUÍDA** e removida. Capacidade liberada.")
-                return task_concluida
-            else:
-                return None
-            
-        return None
+            if task_id is not None:
+                task['tempo_atribuicao'] = time()
+                self.tasks_to_do.append(task)
+                return True
+            return False
 
+    def get_server_status(self):
+        """Retorna status atual do servidor (considerando tarefas em fila + processos ativos)"""
+        with self.lock:
+            # Capacidade usada = processos rodando + tarefas na fila esperando iniciar
+            total_load = self.capacity + len(self.tasks_to_do)
+            return {
+                'id': self.id,
+                'current_capacity': total_load,
+                'max_capacity': self.max_capacity,
+                'is_full': total_load >= self.max_capacity
+            }
+
+    def start_task_process(self, task):
+        """Inicia um novo processo para executar a tarefa"""
+        process = Process(target=process_task_worker, args=(task, self.result_queue))
+        process.start()
+        
+        with self.lock:
+            self.active_processes.append({
+                'process': process,
+                'task_id': task.get('id'),
+                'start_time': time()
+            })
+            self.capacity += 1
+        
+        print(f"Servidor {self.id}: {blue('INICIOU PROCESSO')} para Tarefa {task.get('id')} (Processos ativos: {self.capacity}/{self.max_capacity})")
+
+    def check_completed_processes(self):
+        """Verifica processos finalizados e coleta resultados"""
+        # Processa resultados da queue
+        while not self.result_queue.empty():
+            result = self.result_queue.get()
+            
+            if self.task_manager:
+                self.task_manager.register_completion(
+                    result['task_id'], 
+                    result['tempo_resposta']
+                )
+        
+        # Remove processos finalizados da lista
+        with self.lock:
+            finished = []
+            for proc_info in self.active_processes:
+                if not proc_info['process'].is_alive():
+                    proc_info['process'].join()  # Limpa o processo
+                    finished.append(proc_info)
+                    self.capacity -= 1
+                    print(f"Servidor {self.id}: {green('PROCESSO ENCERRADO')} Tarefa {proc_info['task_id']} (Processos ativos: {self.capacity}/{self.max_capacity})")
+            
+            # Remove da lista
+            for proc_info in finished:
+                self.active_processes.remove(proc_info)
 
     def run(self):
-        tasks_to_execute = list(self.tasks_to_do.keys())
+        """Loop principal do servidor"""
+        print(f"Servidor {self.id}: {blue('INICIADO')} - Capacidade: {self.max_capacity} processos simultâneos")
         
-        if not tasks_to_execute:
-            print(f"Servidor {self.id}: Nenhuma tarefa para executar.")
-            return
+        while not self.stop_event.is_set():
+            # Verifica e limpa processos finalizados
+            self.check_completed_processes()
             
-        print(f"Servidor {self.id} (Capacidade {self.max_capacity}): INICIANDO, {len(tasks_to_execute)} tarefas.")
+            # Inicia novos processos se houver tarefas e capacidade disponível
+            with self.lock:
+                while self.tasks_to_do and self.capacity < self.max_capacity:
+                    task = self.tasks_to_do.pop(0)
+                    # Libera o lock antes de iniciar o processo para evitar deadlock
+                    self.lock.release()
+                    self.start_task_process(task)
+                    self.lock.acquire()
             
-        for task_info in tasks_to_execute:
-            task_id, tempo_exec = task_info
-            
-            print(f"Servidor {self.id}: Executando Tarefa {task_id} por {tempo_exec} segundo(s)...")
-            
-            sleep(tempo_exec) 
-            
-            print(f"Servidor {self.id}: Tarefa {task_id} **CONCLUÍDA**.")
+            sleep(0.05)  # Pequeno intervalo para não sobrecarregar CPU
+        
+        # Aguarda todos os processos terminarem no encerramento
+        print(f"Servidor {self.id}: Aguardando processos finalizarem...")
+        with self.lock:
+            processes_to_wait = list(self.active_processes)
+        
+        for proc_info in processes_to_wait:
+            proc_info['process'].join()
+        
+        print(f"Servidor {self.id}: {red('ENCERRADO')}")
 
-        print(f"Servidor {self.id}: Todas as tarefas finalizadas.")
-            
+    def stop(self):
+        """Sinaliza encerramento do servidor"""
+        self.stop_event.set()
