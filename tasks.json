@@ -5,9 +5,10 @@
         {"id": 3, "capacidade": 1}
     ],
     "requisicoes": [
-        {"id": 101, "tipo": "visao_computacional", "prioridade": 1, "tempo_exec": 8, "temp_chegada" : 2},
-        {"id": 102, "tipo": "nlp", "prioridade": 3, "tempo_exec": 3, "temp_chegada" : 3},
+        {"id": 101, "tipo": "visao_computacional", "prioridade": 1, "tempo_exec": 8, "temp_chegada" : 0},
+        {"id": 102, "tipo": "nlp", "prioridade": 3, "tempo_exec": 3, "temp_chegada" : 0},
         {"id": 103, "tipo": "voz", "prioridade": 2, "tempo_exec": 5, "temp_chegada" : 0},
-        {"id": 108, "tipo": "analise_dados", "prioridade": 1, "tempo_exec": 12, "temp_chegada" : 0}
+        {"id": 108, "tipo": "analise_dados", "prioridade": 1, "tempo_exec": 12, "temp_chegada" : 0},
+        {"id": 108, "tipo": "analise_dados", "prioridade": 3, "tempo_exec": 12, "temp_chegada" : 0}
     ]
 }
