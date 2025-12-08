@@ -5,35 +5,39 @@ import psutil
 from master import TaskManager
 from server import Server
 
-# Recebe o algoritmo de escalonamento via linha de comando (rr/sjf/priority)
-arquiteture = sys.argv[1]
 
 def capture_utilization():
-    # Captura o percentual de uso da CPU em 1 segundo
-    uso_cpu_geral = psutil.cpu_percent(interval=1) 
-    return uso_cpu_geral
+    """Measure CPU usage over 1 second interval"""
+    
+    cpu_usage_percentage = psutil.cpu_percent(interval=1) 
+    return cpu_usage_percentage
+
 
 if __name__ == '__main__':
-    # Valida se o algoritmo fornecido é suportado
-    if arquiteture in ['rr', 'sjf', 'priority']:
+    
+    # Get scheduling algorithm from command line
+    scheduling_algorithm = sys.argv[1]
+    
+    # Validate algorithm selection
+    if scheduling_algorithm in ['rr', 'sjf', 'priority']:
         
-        # Carrega configuração de servidores e requisições do arquivo JSON
+        # Load configuration from JSON
         with open('tasks.json', 'r') as file:
             data = json.load(file)
         
-        # Instancia os servidores com base nos dados do JSON
-        servidores = []
-        for serv_data in data["servidores"]:
-            servidor = Server(serv_data['id'], serv_data['capacidade'])
-            servidores.append(servidor)
+        # Initialize servers
+        servers = []
+        for server_data in data["servidores"]:
+            server = Server(server_data['id'], server_data['capacidade'])
+            servers.append(server)
         
-        requisicoes = data['requisicoes']
+        requests = data['requisicoes']
         
-        # Cria e executa o gerenciador de tarefas com o algoritmo escolhido
-        t1 = TaskManager(arquiteture, servidores, requisicoes)
-        t1.start()
-        t1.join()  # Aguarda conclusão da execução
+        # Execute scheduling algorithm
+        task_manager = TaskManager(scheduling_algorithm, servers, requests)
+        task_manager.start()
+        task_manager.join()
 
-        # Coleta métricas de CPU e calcula estatísticas finais
-        cpu_util = capture_utilization()
-        t1.calculate_metrics(cpu_util)
+        # Calculate and display metrics
+        cpu_utilization = capture_utilization()
+        task_manager.calculate_metrics(cpu_utilization)
