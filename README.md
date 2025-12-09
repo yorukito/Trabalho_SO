@@ -93,3 +93,6 @@ Essas métricas ajudam a comparar comportamento entre algoritmos e configuraçõ
 1. Ajuste `tasks.json` com 3–5 tarefas curtas.
 2. Execute `python main.py (rr, sjf ou priority)`.
 3. Observe a saída no console e compare os resumos entre execuções alterando a arquitetura usada.
+
+
+https://docs.google.com/document/d/1KrwfBvuC48CEMpLasSoGICyEgmK_0Nz3qH1aHwOGEBs/edit?usp=sharing
